@@ -1,10 +1,58 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
+import jwt as pyjwt
+from jwt import PyJWKClient
 from app.config import settings
 from app.supabase_client import get_supabase
 
 bearer = HTTPBearer()
+
+# JWKS client — caches keys automatically, refreshes on key rotation.
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(
+            settings.SUPABASE_JWKS_URL,
+            cache_keys=True,
+            lifespan=300,  # re-fetch keys every 5 minutes
+        )
+    return _jwks_client
+
+
+def _get_signing_key(token: str):
+    """Fetch the matching public key from Supabase JWKS endpoint."""
+    return _get_jwks_client().get_signing_key_from_jwt(token)
+
+
+def _decode_token(token: str) -> dict:
+    """Try RS256 (JWKS) first, fall back to HS256 if a secret is configured."""
+    jwks_unavailable = False
+    try:
+        signing_key = _get_signing_key(token)
+    except Exception:
+        jwks_unavailable = True
+    else:
+        # Key was fetched — decode errors here are definitive (expiry, bad sig, etc.)
+        return pyjwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={"verify_aud": False},
+        )
+
+    # ── HS256 fallback (only when JWKS was unreachable) ──────────
+    if jwks_unavailable and settings.SUPABASE_JWT_SECRET:
+        return pyjwt.decode(
+            token,
+            settings.SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            options={"verify_aud": False},
+        )
+
+    raise pyjwt.InvalidTokenError("Token verification failed")
 
 
 async def get_current_user(
@@ -12,13 +60,13 @@ async def get_current_user(
 ):
     token = credentials.credentials
     try:
-        payload = jwt.decode(
-            token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
-            options={"verify_aud": False},
+        payload = _decode_token(token)
+    except pyjwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
         )
-    except JWTError:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
@@ -40,6 +88,26 @@ async def get_current_user(
         )
 
     return result.data[0]
+
+
+optional_bearer = HTTPBearer(auto_error=False)
+
+
+async def optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer),
+) -> dict | None:
+    """Like get_current_user but returns None instead of raising 401.
+
+    Used for public endpoints where auth enhances (but isn't required for) the response.
+    Intentionally treats both missing tokens AND invalid/expired tokens as anonymous —
+    this supports the browse-first UX where expired sessions can still view public content.
+    """
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(credentials)
+    except HTTPException:
+        return None
 
 
 async def require_worker(current_user: dict = Depends(get_current_user)):

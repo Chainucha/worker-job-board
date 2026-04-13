@@ -84,7 +84,7 @@ class WorkerHomeScreen extends ConsumerWidget {
               data: (jobs) => RefreshIndicator(
                 color: AppTheme.accent,
                 onRefresh: () async {
-                  await ref.refresh(jobListProvider.future);
+                  ref.invalidate(jobListProvider);
                 },
                 child: jobs.isEmpty
                   ? ListView(
@@ -127,7 +127,11 @@ class WorkerHomeScreen extends ConsumerWidget {
                         final job = jobs[index];
                         return JobCard(
                           job: job,
-                          onTap: () => context.push('/worker/jobs/${job.id}'),
+                          onTap: () {
+                            final loc = GoRouterState.of(context).uri.path;
+                            final prefix = loc.startsWith('/browse') ? '/browse' : '/worker';
+                            context.push('$prefix/jobs/${job.id}');
+                          },
                           isEmployerView: false,
                         );
                       },

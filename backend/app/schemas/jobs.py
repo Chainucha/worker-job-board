@@ -1,4 +1,5 @@
 from pydantic import BaseModel, UUID4, field_validator
+from uuid import UUID
 from datetime import date, datetime
 from typing import Literal
 
@@ -38,9 +39,9 @@ class JobUpdate(BaseModel):
 
 
 class JobResponse(BaseModel):
-    id: UUID4
-    employer_id: UUID4
-    category_id: UUID4
+    id: UUID
+    employer_id: UUID
+    category_id: UUID
     title: str
     description: str | None = None
     location_lat: float
@@ -52,6 +53,9 @@ class JobResponse(BaseModel):
     start_date: date
     end_date: date
     created_at: datetime
+    category_name: str | None = None
+    employer_name: str | None = None
+    applicant_count: int = 0
 
 
 class JobListResponse(BaseModel):

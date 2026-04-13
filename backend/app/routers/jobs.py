@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from app.dependencies import get_current_user, require_employer
+from app.dependencies import get_current_user, require_employer, optional_current_user
 from app.schemas.jobs import JobCreate, JobUpdate, JobResponse, JobListResponse
 from app.services import job_service
+from app.services.job_service import _enrich_rows_batch
 from app.supabase_client import get_supabase
 
 router = APIRouter(tags=["jobs"])
@@ -27,7 +28,7 @@ async def list_jobs(
     status: str = Query("open"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    current_user: dict = Depends(get_current_user),
+    _current_user: dict | None = Depends(optional_current_user),
 ):
     db = get_supabase()
     return await job_service.get_jobs_feed(
@@ -58,13 +59,16 @@ async def create_job(
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: str,
-    current_user: dict = Depends(get_current_user),
+    _current_user: dict | None = Depends(optional_current_user),
 ):
     db = get_supabase()
-    result = db.table("jobs").select("*").eq("id", job_id).execute()
+    result = db.table("jobs").select(
+        "*, categories(name)"
+    ).eq("id", job_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Job not found")
-    return result.data[0]
+    enriched = _enrich_rows_batch(db, result.data)
+    return enriched[0]
 
 
 @router.patch("/{job_id}", response_model=JobResponse)
